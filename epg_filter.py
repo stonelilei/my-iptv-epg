@@ -7,15 +7,17 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==================== 配置区域 ====================
-# 已经确认这是 M3U 文本源
+# 你的 IPTV 订阅地址
 JSON_URL = "http://hn.wikiapp.uk:5678/tv.m3u?token=cd52e0986f&url=myiptv"
 
+# 【核心修改】更换为全球节点 CDN 畅通、无海外数据中心拦截策略的 EPG 镜像源
 BIG_XML_URLS = [
-    "https://epg.112114.xyz/pp.xml",       
-    "https://epg.51zmt.top:444/e.xml",     
-    "https://epg.pw/xmltv/epg_HK.xml",     
-    "https://epg.pw/xmltv/epg_TW.xml",
-    "https://epg.pw/xmltv/epg_US.xml",
+    "https://xmltv.ch/xmltv.xml",                             # 全球及欧洲台源镜像
+    "https://iptv-org.github.io/epg/guides/cn.xml",           # IPTV-org 官方维护的中国区不限流源（强烈推荐，GitHub生态内极快）
+    "https://iptv-org.github.io/epg/guides/hk.xml",           # IPTV-org 香港地区源
+    "https://iptv-org.github.io/epg/guides/tw.xml",           # IPTV-org 台湾地区源
+    "https://iptv-org.github.io/epg/guides/uk.xml",           # IPTV-org 英国台源（匹配你的 skyhistoryuk, bbcnews 等）
+    "https://iptv-org.github.io/epg/guides/us.xml",           # IPTV-org 美国台源
 ]
 
 OUTPUT_FILE = "my_epg.xml"
@@ -33,7 +35,6 @@ def get_channels_from_json(url):
         response.encoding = response.apparent_encoding  
         content_text = response.text
         
-        # 兜底：如果这依然是个 JSON
         if content_text.strip().startswith('{') or content_text.strip().startswith('['):
             try:
                 data = response.json()
@@ -45,53 +46,38 @@ def get_channels_from_json(url):
                 if channels: return channels
             except: pass
 
-        # 核心：高容错解析 M3U 文本流
         lines = content_text.split('\n')
         for line in lines:
             line = line.strip()
-            if not line:
-                continue
+            if not line: continue
             
             if line.startswith("#EXTINF"):
-                # 1. 提取 tvg-name
                 tvg_name_match = re.search(r'tvg-name="([^"]+)"', line, re.IGNORECASE)
                 if tvg_name_match:
                     add_channel_variants(channels, tvg_name_match.group(1))
                 
-                # 2. 提取 tvg-id
                 tvg_id_match = re.search(r'tvg-id="([^"]+)"', line, re.IGNORECASE)
                 if tvg_id_match:
                     add_channel_variants(channels, tvg_id_match.group(1))
                 
-                # 3. 提取后半截的显示名称（不管有没有逗号，通杀截取）
                 if ',' in line:
                     display_name = line.split(',')[-1].strip()
-                    # 防止 display_name 里面夹杂特殊分组符号，如 "央视-CCTV1" 提取为 "CCTV1"
                     if display_name:
                         add_channel_variants(channels, display_name)
-                        # 如果带减号，额外把减号后面的捞出来
                         if '-' in display_name:
                             add_channel_variants(channels, display_name.split('-')[-1])
-            
-            # 兼容非标准格式：如果行里面包含中文、CCTV、HBO、卫视等关键字，且不含 http，直接当做频道名抓取
             elif not line.startswith("#") and not line.startswith("http") and len(line) < 30:
-                if ',' in line:
-                    line = line.split(',')[0]
+                if ',' in line: line = line.split(',')[0]
                 add_channel_variants(channels, line)
-
     except Exception as e:
         print(f"❌ 请求订阅接口时发生致命错误: {e}")
-        
     return channels
 
 def add_channel_variants(channel_set, name):
     """清理名称中常见的各种冗余后缀，统一格式注入集合"""
     name_str = name.strip()
-    # 过滤掉杂质字符
     if name_str and not name_str.startswith("http") and not name_str.startswith("#"):
         channel_set.add(name_str)
-        
-        # 移除常见干扰后缀，生成模糊匹配变体
         clean_name = name_str.replace("HD", "").replace("FHD", "").replace("超清", "").replace("高清", "")
         clean_name = clean_name.replace(" ", "").replace("-", "").replace("_", "").lower().strip()
         if clean_name:
@@ -103,27 +89,27 @@ def merge_and_filter_epg(xml_urls, valid_channels, output_path):
     
     added_channel_ids = set()
     added_programmes = set()
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    
+    # 模拟更加纯正的浏览器/盒子头，防止部分镜像返回 403
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; MMTvBox) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xml,application/xhtml+xml',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
+    }
 
     for index, url in enumerate(xml_urls, 1):
         print(f"\n⏳ [{index}/{len(xml_urls)}] 正在下载并解析源: {url}")
         try:
-            response = requests.get(url, headers=headers, timeout=120, stream=True, verify=False)
+            response = requests.get(url, headers=headers, timeout=60, stream=True, verify=False)
             if response.status_code != 200:
                 print(f"⚠️ 下载失败，HTTP 状态码: {response.status_code}")
+                # 【防崩埋点】打印前100个字符看是不是HTML报错
+                print(f"[DEBUG] 错误响应前100字: {response.text[:100] if response.text else '空'}")
                 continue
                 
             tree = ET.parse(response.raw)
             root = tree.getroot()
             keep_channel_ids_this_source = set()
-            
-            # 【诊断日志】
-            sample_channels = root.findall('channel')[:5]
-            print(f"[🔍 诊断] 该 EPG 源前几个频道的名称格式示例:")
-            for sc in sample_channels:
-                sc_id = sc.get('id')
-                sc_names = [n.text for n in sc.findall('display-name') if n.text]
-                print(f"    -> ID: '{sc_id}', 显示名: {sc_names}")
             
             # 1. 过滤 channel
             for channel in root.findall('channel'):
