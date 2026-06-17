@@ -5,7 +5,7 @@ import re
 
 # ==================== 配置区域 ====================
 # 1. 你的 IPTV 订阅地址
-JSON_URL = "http://tv.wikiapp.uk:5173/api/subscription/json?token=tok_8K9RBFIE"
+JSON_URL = "https://tv.wikiapp.uk:5173/api/subscription/m3u?token=tok_8K9RBFIE"
 
 # 2. 全量 XMLTV 源地址列表 (支持添加任意多个，程序会按顺序依次抓取并融合)
 BIG_XML_URLS = [
