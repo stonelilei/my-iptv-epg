@@ -10,8 +10,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # 1. 你的 IPTV 直播源地址
 M3U_URL = "http://hn.wikiapp.uk:5678/tv.m3u?token=cd52e0986f&url=myiptv"
 
-# 2. 托管在 GitHub Pages 上、绝不会被防火墙拦截、海外速度极快的精简综合 EPG 源
-BIG_XML_URL = "https://fanmingming.com/txt/epg.xml"
+# 2. 【终极对策】完全托管在 github.io 域名下的官方 EPG 镜像（自身生态内访问，高防不会拦截自家人）
+BIG_XML_URL = "https://fanmingming.github.io/live/epg.xml"
 
 # 3. 生成的精简版文件名
 OUTPUT_FILE = "my_epg.xml"
@@ -89,8 +89,10 @@ def do_filter(xml_url, valid_channels, output_path):
     new_root = ET.Element('tv')
     new_root.set('generator-info-name', 'IPTV EPG Smart Filter')
     
+    # 既然在 GitHub 内网跑，我们把 Accept 头部精简，强制要求接收 XML
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/xml, text/xml, */*'
     }
     
     print(f"⏳ 正在从稳定节点拉取远端核心节目单: {xml_url}")
@@ -118,7 +120,6 @@ def do_filter(xml_url, valid_channels, output_path):
                 item_raw = str(item).strip()
                 item_fuzzy = item_raw.replace(" ", "").replace("-", "").replace("_", "").replace("频道", "").lower()
                 
-                # 双重判定：字面绝对匹配，或者智能别名对齐匹配
                 if (item_raw in valid_channels or 
                     item_fuzzy in valid_channels or 
                     get_smart_alias(item_raw) in valid_channels):
