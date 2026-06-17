@@ -2,7 +2,6 @@ import xml.etree.ElementTree as ET
 import requests
 import sys
 import re
-# 导入 urllib3 用于消除安全警告
 import urllib3
 
 # 强制禁用并静音由于忽略 SSL 证书验证带来的不安全警告
@@ -26,7 +25,7 @@ OUTPUT_FILE = "my_epg.xml"
 # ==================================================
 
 def get_channels_from_json(url):
-    """自适应解析：增加 verify=False 彻底绕过自签名证书限制"""
+    """自适应解析：优先 JSON，失败则转换为纯文本/M3U 规则提取频道名称"""
     channels = set()
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -34,7 +33,6 @@ def get_channels_from_json(url):
     }
     
     try:
-        # 【核心修改】加入 verify=False，无视证书问题硬闯进去抓取数据
         response = requests.get(url, headers=headers, timeout=25, verify=False)
         response.encoding = response.apparent_encoding  
         content_text = response.text
@@ -111,13 +109,11 @@ def merge_and_filter_epg(xml_urls, valid_channels, output_path):
     
     added_channel_ids = set()
     added_programmes = set()
-    total_matched_channels = 0
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 
     for index, url in enumerate(xml_urls, 1):
         print(f"\n⏳ [{index}/{len(xml_urls)}] 正在下载并解析源: {url}")
         try:
-            # 如果远端的公共 EPG 源也偶尔有证书问题，这里同样加上 verify=False
             response = requests.get(url, headers=headers, timeout=120, stream=True, verify=False)
             if response.status_code != 200:
                 print(f"⚠️ 下载失败，HTTP 状态码: {response.status_code}，跳过此源。")
@@ -133,14 +129,11 @@ def merge_and_filter_epg(xml_urls, valid_channels, output_path):
                 display_names = [name.text.strip() for name in channel.findall('display-name') if name.text]
                 
                 match = False
+                # 检查 ID 是否匹配
                 if channel_id in valid_channels:
                     match = True
                 else:
-                    for name in display_names:
-                        if name in valid_vectors: # 这里的 valid_channels 在上个版本打错成 valid_vectors，这次彻底订正
-                            match = True
-                            break
-                    # 上面笔误修正：
+                    # 检查任意一个 display-name 是否匹配
                     for name in display_names:
                         if name in valid_channels:
                             match = True
@@ -153,7 +146,6 @@ def merge_and_filter_epg(xml_urls, valid_channels, output_path):
                         added_channel_ids.add(channel_id)
             
             source_match_count = len(keep_channel_ids_this_source)
-            total_matched_channels += source_match_count
             print(f"✅ 该源成功匹配到 {source_match_count} 个您的直播频道。")
             
             # 2. 过滤 programme
@@ -198,7 +190,7 @@ if __name__ == "__main__":
     if my_channels:
         success = merge_and_filter_epg(BIG_XML_URLS, my_channels, OUTPUT_FILE)
     else:
-        print("❌ 未获取到任何有效的频道（JSON 与 TXT 降级解析均未提取到内容），停止过滤。")
+        print("❌ 未获取到任何有效的频道，停止过滤。")
         
     if not success:
         sys.exit(1)
