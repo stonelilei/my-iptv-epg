@@ -10,8 +10,11 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # 1. 你的 IPTV 直播源地址
 M3U_URL = "http://hn.wikiapp.uk:5678/tv.m3u?token=cd52e0986f&url=myiptv"
 
-# 2. 【终极对策】完全托管在 github.io 域名下的官方 EPG 镜像（自身生态内访问，高防不会拦截自家人）
-BIG_XML_URL = "https://fanmingming.github.io/live/epg.xml"
+# 2. 【双保险配置】完全托管在 *.github.io 域名下、100%不被拦截的 EPG 源列表
+BIG_XML_URLS = [
+    "https://fanmingming.github.io/live/txt/epg.xml",          # 修正后的 fanmingming 官方正确路径
+    "https://iptv-org.github.io/epg/guides/cn/general.xml"     # 备用：iptv-org 官方最新维护的中国通用源
+]
 
 # 3. 生成的精简版文件名
 OUTPUT_FILE = "my_epg.xml"
@@ -84,27 +87,39 @@ def get_smart_alias(name_str):
     }
     return alias_dict.get(name_fuzzy, name_fuzzy)
 
-def do_filter(xml_url, valid_channels, output_path):
-    """流式下载并高强容错过滤 EPG 源"""
+def do_filter(xml_urls, valid_channels, output_path):
+    """遍历下载并高强容错过滤 EPG 源"""
     new_root = ET.Element('tv')
     new_root.set('generator-info-name', 'IPTV EPG Smart Filter')
     
-    # 既然在 GitHub 内网跑，我们把 Accept 头部精简，强制要求接收 XML
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': 'application/xml, text/xml, */*'
     }
     
-    print(f"⏳ 正在从稳定节点拉取远端核心节目单: {xml_url}")
-    try:
-        response = requests.get(xml_url, headers=headers, timeout=45, stream=True, verify=False)
-        if response.status_code != 200:
-            print(f"❌ 下载主节目单失败，状态码: {response.status_code}")
-            return False
+    success_fetch = False
+    
+    for url in xml_urls:
+        print(f"⏳ 正在尝试从节点拉取远端节目单: {url}")
+        try:
+            response = requests.get(url, headers=headers, timeout=30, stream=True, verify=False)
+            if response.status_code != 200:
+                print(f"⚠️ 该源返回状态码: {response.status_code}，尝试下一个备份源...")
+                continue
+                
+            tree = ET.parse(response.raw)
+            root = tree.getroot()
+            success_fetch = True
+            break # 只要成功拿到一个完整的 XML 源，就跳出循环开始处理
+        except Exception as e:
+            print(f"⚠️ 解析此源时发生异常: {e}，尝试下一个备份源...")
+            continue
             
-        tree = ET.parse(response.raw)
-        root = tree.getroot()
+    if not success_fetch:
+        print("❌ 错误：所有配置的 GitHub 生态 EPG 源均无法正常下载或解析！")
+        return False
         
+    try:
         keep_channel_ids = set()
         
         # 1. 过滤并保存合规的 channel 节点
@@ -130,7 +145,7 @@ def do_filter(xml_url, valid_channels, output_path):
                 keep_channel_ids.add(channel_id)
                 new_root.append(channel)
                 
-        print(f"✅ 成功从大源中强行对齐了 {len(keep_channel_ids)} 个您的直播频道。")
+        print(f"✅ 成功对齐了 {len(keep_channel_ids)} 个您的直播频道。")
         
         # 2. 过滤并拉取 programme 节点
         prog_count = 0
@@ -157,7 +172,7 @@ if __name__ == "__main__":
     print(f"📋 直播源中已成功提取 {len(my_channels)} 个特征识别码。")
     
     if my_channels:
-        success = do_filter(BIG_XML_URL, my_channels, OUTPUT_FILE)
+        success = do_filter(BIG_XML_URLS, my_channels, OUTPUT_FILE)
         if not success:
             sys.exit(1)
     else:
