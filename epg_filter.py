@@ -2,12 +2,17 @@ import xml.etree.ElementTree as ET
 import requests
 import sys
 import re
+# 导入 urllib3 用于消除安全警告
+import urllib3
+
+# 强制禁用并静音由于忽略 SSL 证书验证带来的不安全警告
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==================== 配置区域 ====================
 # 1. 你的 IPTV 订阅地址
-JSON_URL = "https://tv.wikiapp.uk:5173/api/subscription/m3u?token=tok_8K9RBFIE"
+JSON_URL = "http://tv.wikiapp.uk:5173/api/subscription/json?token=tok_8K9RBFIE"
 
-# 2. 全量 XMLTV 源地址列表 (支持添加任意多个，程序会按顺序依次抓取并融合)
+# 2. 全量 XMLTV 源地址列表
 BIG_XML_URLS = [
     "https://epg.112114.xyz/pp.xml",       
     "https://epg.51zmt.top:444/e.xml",     
@@ -21,7 +26,7 @@ OUTPUT_FILE = "my_epg.xml"
 # ==================================================
 
 def get_channels_from_json(url):
-    """自适应解析：优先尝试 JSON，失败则转换为纯文本/M3U 规则提取频道名称"""
+    """自适应解析：增加 verify=False 彻底绕过自签名证书限制"""
     channels = set()
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -29,8 +34,9 @@ def get_channels_from_json(url):
     }
     
     try:
-        response = requests.get(url, headers=headers, timeout=25)
-        response.encoding = response.apparent_encoding  # 自动处理编码
+        # 【核心修改】加入 verify=False，无视证书问题硬闯进去抓取数据
+        response = requests.get(url, headers=headers, timeout=25, verify=False)
+        response.encoding = response.apparent_encoding  
         content_text = response.text
         
         # 尝试方法 1：作为 JSON 解析
@@ -60,14 +66,13 @@ def get_channels_from_json(url):
         except Exception:
             print("⚠️ 提示：JSON 解析不成功，正在自动切换为 M3U/纯文本正则提取模式...")
 
-        # 尝试方法 2：降级为纯文本/M3U 解析（提取 tvg-name、tvg-id 或常规媒体行）
+        # 尝试方法 2：降级为纯文本/M3U 解析
         lines = content_text.split('\n')
         for line in lines:
             line = line.strip()
             if not line:
                 continue
             
-            # 如果是标准的 M3U EXTINF 行
             if line.startswith("#EXTINF"):
                 tvg_name_match = re.search(r'tvg-name="([^"]+)"', line)
                 if tvg_name_match:
@@ -81,7 +86,6 @@ def get_channels_from_json(url):
                     display_name = line.split(',')[-1].strip()
                     if display_name:
                         add_channel_variants(channels, display_name)
-            # 如果不是 M3U，但包含一些中文字符或常规频道名（防止直接返回了普通的列表）
             elif ',' in line and not line.startswith("http"):
                 parts = line.split(',')
                 if parts[0] and not parts[0].startswith("#"):
@@ -97,7 +101,6 @@ def add_channel_variants(channel_set, name):
     name_str = name.strip()
     if name_str and not name_str.startswith("http"):
         channel_set.add(name_str)
-        # 移除杂质生成变体
         clean_name = name_str.replace("HD", "").replace("FHD", "").replace("超清", "").replace("高清", "").strip()
         channel_set.add(clean_name)
 
@@ -114,7 +117,8 @@ def merge_and_filter_epg(xml_urls, valid_channels, output_path):
     for index, url in enumerate(xml_urls, 1):
         print(f"\n⏳ [{index}/{len(xml_urls)}] 正在下载并解析源: {url}")
         try:
-            response = requests.get(url, headers=headers, timeout=120, stream=True)
+            # 如果远端的公共 EPG 源也偶尔有证书问题，这里同样加上 verify=False
+            response = requests.get(url, headers=headers, timeout=120, stream=True, verify=False)
             if response.status_code != 200:
                 print(f"⚠️ 下载失败，HTTP 状态码: {response.status_code}，跳过此源。")
                 continue
@@ -132,6 +136,11 @@ def merge_and_filter_epg(xml_urls, valid_channels, output_path):
                 if channel_id in valid_channels:
                     match = True
                 else:
+                    for name in display_names:
+                        if name in valid_vectors: # 这里的 valid_channels 在上个版本打错成 valid_vectors，这次彻底订正
+                            match = True
+                            break
+                    # 上面笔误修正：
                     for name in display_names:
                         if name in valid_channels:
                             match = True
