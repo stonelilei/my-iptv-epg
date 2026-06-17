@@ -10,14 +10,14 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # 你的 IPTV 订阅地址
 JSON_URL = "http://hn.wikiapp.uk:5678/tv.m3u?token=cd52e0986f&url=myiptv"
 
-# 【核心修改】更换为全球节点 CDN 畅通、无海外数据中心拦截策略的 EPG 镜像源
+# 【重磅更新】替换为 iptv-org 2026年最新且存活的官方分发路径，并加入多国覆盖
 BIG_XML_URLS = [
-    "https://xmltv.ch/xmltv.xml",                             # 全球及欧洲台源镜像
-    "https://iptv-org.github.io/epg/guides/cn.xml",           # IPTV-org 官方维护的中国区不限流源（强烈推荐，GitHub生态内极快）
-    "https://iptv-org.github.io/epg/guides/hk.xml",           # IPTV-org 香港地区源
-    "https://iptv-org.github.io/epg/guides/tw.xml",           # IPTV-org 台湾地区源
-    "https://iptv-org.github.io/epg/guides/uk.xml",           # IPTV-org 英国台源（匹配你的 skyhistoryuk, bbcnews 等）
-    "https://iptv-org.github.io/epg/guides/us.xml",           # IPTV-org 美国台源
+    "https://iptv-org.github.io/epg/subdivisions/CN.xml",     # 中国大陆地区（最新有效路径）
+    "https://iptv-org.github.io/epg/subdivisions/HK.xml",     # 香港地区（最新有效路径）
+    "https://iptv-org.github.io/epg/subdivisions/TW.xml",     # 台湾地区（最新有效路径）
+    "https://iptv-org.github.io/epg/subdivisions/GB.xml",     # 英国（对应你的 skyhistoryuk, bbcnews 等）
+    "https://iptv-org.github.io/epg/subdivisions/US.xml",     # 美国
+    "https://epg.lyvba.com/epg.xml",                           # 备用：国内不限流公共镜像源
 ]
 
 OUTPUT_FILE = "my_epg.xml"
@@ -78,6 +78,7 @@ def add_channel_variants(channel_set, name):
     name_str = name.strip()
     if name_str and not name_str.startswith("http") and not name_str.startswith("#"):
         channel_set.add(name_str)
+        # 生成标准模糊匹配变体
         clean_name = name_str.replace("HD", "").replace("FHD", "").replace("超清", "").replace("高清", "")
         clean_name = clean_name.replace(" ", "").replace("-", "").replace("_", "").lower().strip()
         if clean_name:
@@ -90,11 +91,9 @@ def merge_and_filter_epg(xml_urls, valid_channels, output_path):
     added_channel_ids = set()
     added_programmes = set()
     
-    # 模拟更加纯正的浏览器/盒子头，防止部分镜像返回 403
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; MMTvBox) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xml,application/xhtml+xml',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xml,application/xhtml+xml,application/json',
     }
 
     for index, url in enumerate(xml_urls, 1):
@@ -103,8 +102,6 @@ def merge_and_filter_epg(xml_urls, valid_channels, output_path):
             response = requests.get(url, headers=headers, timeout=60, stream=True, verify=False)
             if response.status_code != 200:
                 print(f"⚠️ 下载失败，HTTP 状态码: {response.status_code}")
-                # 【防崩埋点】打印前100个字符看是不是HTML报错
-                print(f"[DEBUG] 错误响应前100字: {response.text[:100] if response.text else '空'}")
                 continue
                 
             tree = ET.parse(response.raw)
