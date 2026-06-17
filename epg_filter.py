@@ -10,7 +10,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==================== 配置区域 ====================
 # 1. 你的 IPTV 订阅地址
-JSON_URL = "http://tv.wikiapp.uk:5173/api/subscription/json?token=tok_8K9RBFIE"
+JSON_URL = "http://hn.wikiapp.uk:5678/tv.m3u?token=cd52e0986f&url=myiptv"
 
 # 2. 全量 XMLTV 源地址列表
 BIG_XML_URLS = [
