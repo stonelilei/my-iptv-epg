@@ -4,14 +4,11 @@ import sys
 import re
 import urllib3
 
-# 强制禁用并静音由于忽略 SSL 证书验证带来的不安全警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==================== 配置区域 ====================
-# 1. 你的 IPTV 订阅地址
 JSON_URL = "http://hn.wikiapp.uk:5678/tv.m3u?token=cd52e0986f&url=myiptv"
 
-# 2. 全量 XMLTV 源地址列表
 BIG_XML_URLS = [
     "https://epg.112114.xyz/pp.xml",       
     "https://epg.51zmt.top:444/e.xml",     
@@ -20,7 +17,6 @@ BIG_XML_URLS = [
     "https://epg.pw/xmltv/epg_US.xml",
 ]
 
-# 3. 生成的精简版文件名
 OUTPUT_FILE = "my_epg.xml"
 # ==================================================
 
@@ -40,7 +36,6 @@ def get_channels_from_json(url):
         # 尝试方法 1：作为 JSON 解析
         try:
             data = response.json()
-            print("[INFO] 成功以此接口的 JSON 模式进行数据解析。")
             items = []
             if isinstance(data, list):
                 items = data
@@ -62,7 +57,7 @@ def get_channels_from_json(url):
             if channels:
                 return channels
         except Exception:
-            print("⚠️ 提示：JSON 解析不成功，正在自动切换为 M3U/纯文本正则提取模式...")
+            pass
 
         # 尝试方法 2：降级为纯文本/M3U 解析
         lines = content_text.split('\n')
@@ -99,11 +94,11 @@ def add_channel_variants(channel_set, name):
     name_str = name.strip()
     if name_str and not name_str.startswith("http"):
         channel_set.add(name_str)
-        clean_name = name_str.replace("HD", "").replace("FHD", "").replace("超清", "").replace("高清", "").strip()
+        # 增加更多常见的变体清洗逻辑
+        clean_name = name_str.replace("HD", "").replace("FHD", "").replace("超清", "").replace("高清", "").replace(" ", "").replace("-", "").lower().strip()
         channel_set.add(clean_name)
 
 def merge_and_filter_epg(xml_urls, valid_channels, output_path):
-    """遍历多个 XMLTV 源，提取匹配的频道和节目，最终融合成一个新文件"""
     new_root = ET.Element('tv')
     new_root.set('generator-info-name', 'IPTV EPG Merger')
     
@@ -116,28 +111,40 @@ def merge_and_filter_epg(xml_urls, valid_channels, output_path):
         try:
             response = requests.get(url, headers=headers, timeout=120, stream=True, verify=False)
             if response.status_code != 200:
-                print(f"⚠️ 下载失败，HTTP 状态码: {response.status_code}，跳过此源。")
+                print(f"⚠️ 下载失败，HTTP 状态码: {response.status_code}")
                 continue
                 
             tree = ET.parse(response.raw)
             root = tree.getroot()
             keep_channel_ids_this_source = set()
             
+            # 【诊断日志】打印大 EPG 源里前 5 个频道的名字，用于肉眼比对
+            sample_channels = root.findall('channel')[:5]
+            print(f"[🔍 诊断] 该 EPG 源前几个频道的名称格式示例:")
+            for sc in sample_channels:
+                sc_id = sc.get('id')
+                sc_names = [n.text for n in sc.findall('display-name') if n.text]
+                print(f"    -> ID: '{sc_id}', 显示名: {sc_names}")
+            
             # 1. 过滤 channel
             for channel in root.findall('channel'):
                 channel_id = channel.get('id')
                 display_names = [name.text.strip() for name in channel.findall('display-name') if name.text]
                 
+                # 增强匹配：同时做全小写、去空格、去减号的模糊匹配
                 match = False
-                # 检查 ID 是否匹配
-                if channel_id in valid_channels:
-                    match = True
-                else:
-                    # 检查任意一个 display-name 是否匹配
-                    for name in display_names:
-                        if name in valid_channels:
-                            match = True
-                            break
+                
+                # 构建用于模糊匹配的检测序列
+                check_list = [channel_id] + display_names
+                
+                for item in check_list:
+                    if not item: continue
+                    item_str = str(item).strip()
+                    item_fuzzy = item_str.replace(" ", "").replace("-", "").lower()
+                    
+                    if item_str in valid_channels or item_fuzzy in valid_channels:
+                        match = True
+                        break
                 
                 if match:
                     keep_channel_ids_this_source.add(channel_id)
@@ -165,7 +172,7 @@ def merge_and_filter_epg(xml_urls, valid_channels, output_path):
             print(f"🎬 从该源成功合并了 {prog_count} 条节目单详情。")
             
         except Exception as e:
-            print(f"❌ 解析此源时发生错误: {e}，已跳过。")
+            print(f"❌ 解析此源时发生错误: {e}")
             continue
 
     if len(added_channel_ids) == 0:
@@ -184,8 +191,13 @@ def merge_and_filter_epg(xml_urls, valid_channels, output_path):
 
 if __name__ == "__main__":
     my_channels = get_channels_from_json(JSON_URL)
-    print(f"📋 从你的接口中一共解析出 {len(my_channels)} 个频道关键词。")
     
+    # 【诊断日志】打印你的直播源里抓出来的前 10 个名字
+    print(f"📋 从你的接口中一共解析出 {len(my_channels)} 个频道关键词。")
+    print(f"[🔍 诊断] 你的直播源频道名称前 10 个示例:")
+    for idx, ch in enumerate(list(my_channels)[:10]):
+        print(f"    {idx+1}. '{ch}'")
+        
     success = False
     if my_channels:
         success = merge_and_filter_epg(BIG_XML_URLS, my_channels, OUTPUT_FILE)
