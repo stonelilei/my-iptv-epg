@@ -10,9 +10,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # 1. 你的 IPTV 直播源地址
 M3U_URL = "http://hn.wikiapp.uk:5678/tv.m3u?token=cd52e0986f&url=myiptv"
 
-# 2. 全量稳定且对海外CDN极其友好的大节目单源（112114 主线+地方精简综合源）
-# 该源在海外下载极快，且格式极其规范，不易挂掉
-BIG_XML_URL = "https://epg.112114.xyz/pp.xml"
+# 2. 托管在 GitHub Pages 上、绝不会被防火墙拦截、海外速度极快的精简综合 EPG 源
+BIG_XML_URL = "https://fanmingming.com/txt/epg.xml"
 
 # 3. 生成的精简版文件名
 OUTPUT_FILE = "my_epg.xml"
@@ -49,19 +48,20 @@ def add_to_set(channel_set, name):
     name_str = name.strip()
     if name_str and not name_str.startswith("http"):
         channel_set.add(name_str)
-        # 移除常见小尾巴：HD, FHD, 高清, 超清
-        clean = re.sub(r'\[.*?\]|\(.*?\)|HD|FHD|高清|超清', '', name_str).strip()
+        # 移除常见小尾巴
+        clean = re.sub(r'\[.*?\]|\(.*?\)|HD|FHD|高清|超清|频道', '', name_str).strip()
         channel_set.add(clean)
-        # 纯数字/字母变体（例如：把 CCTV-1 综合 降维成 cctv1）
-        fuzzy = clean.replace(" ", "").replace("-", "").replace("_", "").replace("频道", "").lower()
+        
+        # 纯数字/字母模糊变体（例如：CCTV-1 综合 -> cctv1）
+        fuzzy = clean.replace(" ", "").replace("-", "").replace("_", "").lower()
         if fuzzy:
             channel_set.add(fuzzy)
 
 def get_smart_alias(name_str):
-    """核心别名翻译器：当名字不规范时，强行翻译成112114大节目单里标准的channel id"""
+    """核心别名翻译器：自动将不规范的名字对齐到标准大节目单的 ID"""
     name_fuzzy = name_str.replace(" ", "").replace("-", "").replace("_", "").replace("频道", "").lower()
     
-    # 常规央视别名自动对齐字典
+    # 常规央视/主流卫视别名自动对齐字典
     alias_dict = {
         "cctv1": "cctv1", "cctv1综合": "cctv1", "中央1": "cctv1", "中央一": "cctv1",
         "cctv2": "cctv2", "cctv2财经": "cctv2",
@@ -80,6 +80,7 @@ def get_smart_alias(name_str):
         "cctv15": "cctv15", "cctv15音乐": "cctv15",
         "cctv16": "cctv16", "cctv16奥林匹克": "cctv16",
         "cctv17": "cctv17", "cctv17农业农村": "cctv17",
+        "湖南卫视": "湖南卫视", "浙江卫视": "浙江卫视", "东方卫视": "东方卫视", "江苏卫视": "江苏卫视"
     }
     return alias_dict.get(name_fuzzy, name_fuzzy)
 
@@ -92,7 +93,7 @@ def do_filter(xml_url, valid_channels, output_path):
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     
-    print(f"⏳ 正在拉取远端核心节目单: {xml_url}")
+    print(f"⏳ 正在从稳定节点拉取远端核心节目单: {xml_url}")
     try:
         response = requests.get(xml_url, headers=headers, timeout=45, stream=True, verify=False)
         if response.status_code != 200:
@@ -109,7 +110,6 @@ def do_filter(xml_url, valid_channels, output_path):
             channel_id = channel.get('id')
             display_names = [n.text.strip() for n in channel.findall('display-name') if n.text]
             
-            # 将大源的名字全部拉出来做别名清洗
             match = False
             check_list = [channel_id] + display_names
             
