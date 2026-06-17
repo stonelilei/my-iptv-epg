@@ -3,9 +3,6 @@ import requests
 import sys
 import re
 import urllib3
-import datetime
-from bs4 import BeautifulSoup
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -13,12 +10,16 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # 1. 你的 IPTV 直播源地址
 M3U_URL = "http://hn.wikiapp.uk:5678/tv.m3u?token=cd52e0986f&url=myiptv"
 
-# 2. 生成的精简版文件名
+# 2. 全量稳定且对海外CDN极其友好的大节目单源（112114 主线+地方精简综合源）
+# 该源在海外下载极快，且格式极其规范，不易挂掉
+BIG_XML_URL = "https://epg.112114.xyz/pp.xml"
+
+# 3. 生成的精简版文件名
 OUTPUT_FILE = "my_epg.xml"
 # ==================================================
 
 def get_channels_from_m3u(url):
-    """从 M3U 中提取最干净的频道原始显示名称"""
+    """自适应提取 M3U 频道，深度清洗并建立核心匹配库"""
     channels = set()
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     try:
@@ -28,154 +29,136 @@ def get_channels_from_m3u(url):
         for line in lines:
             line = line.strip()
             if line.startswith("#EXTINF"):
+                # 1. 捞取 tvg-name / tvg-id
+                tvg_name = re.search(r'tvg-name="([^"]+)"', line, re.IGNORECASE)
+                tvg_id = re.search(r'tvg-id="([^"]+)"', line, re.IGNORECASE)
+                if tvg_name: add_to_set(channels, tvg_name.group(1))
+                if tvg_id: add_to_set(channels, tvg_id.group(1))
+                
+                # 2. 捞取逗号后的标准名字
                 if ',' in line:
                     display_name = line.split(',')[-1].strip()
                     if display_name and not display_name.startswith("#"):
-                        # 清理掉名字中的特殊小尾巴，只保留纯频道名以便在网上搜索
-                        clean_name = re.sub(r'\[.*?\]|\(.*?\)|HD|FHD|高清|超清', '', display_name).strip()
-                        if clean_name:
-                            channels.add(clean_name)
+                        add_to_set(channels, display_name)
     except Exception as e:
         print(f"❌ 请求 M3U 直播源失败: {e}")
     return channels
 
-def fetch_epg_from_web(channel_name):
-    """核心网络爬虫：直接去主流电视指南网站搜索并抓取当前频道的节目单"""
+def add_to_set(channel_set, name):
+    """把频道名及其规范化变体加入集合，最大化提高配对概率"""
+    name_str = name.strip()
+    if name_str and not name_str.startswith("http"):
+        channel_set.add(name_str)
+        # 移除常见小尾巴：HD, FHD, 高清, 超清
+        clean = re.sub(r'\[.*?\]|\(.*?\)|HD|FHD|高清|超清', '', name_str).strip()
+        channel_set.add(clean)
+        # 纯数字/字母变体（例如：把 CCTV-1 综合 降维成 cctv1）
+        fuzzy = clean.replace(" ", "").replace("-", "").replace("_", "").replace("频道", "").lower()
+        if fuzzy:
+            channel_set.add(fuzzy)
+
+def get_smart_alias(name_str):
+    """核心别名翻译器：当名字不规范时，强行翻译成112114大节目单里标准的channel id"""
+    name_fuzzy = name_str.replace(" ", "").replace("-", "").replace("_", "").replace("频道", "").lower()
+    
+    # 常规央视别名自动对齐字典
+    alias_dict = {
+        "cctv1": "cctv1", "cctv1综合": "cctv1", "中央1": "cctv1", "中央一": "cctv1",
+        "cctv2": "cctv2", "cctv2财经": "cctv2",
+        "cctv3": "cctv3", "cctv3综艺": "cctv3",
+        "cctv4": "cctv4", "cctv4中文国际": "cctv4",
+        "cctv5": "cctv5", "cctv5体育": "cctv5",
+        "cctv6": "cctv6", "cctv6电影": "cctv6",
+        "cctv7": "cctv7", "cctv7国防军事": "cctv7", "cctv7军事": "cctv7",
+        "cctv8": "cctv8", "cctv8电视剧": "cctv8",
+        "cctv9": "cctv9", "cctv9记录": "cctv9", "cctv9纪录": "cctv9",
+        "cctv10": "cctv10", "cctv10科教": "cctv10",
+        "cctv11": "cctv11", "cctv11戏曲": "cctv11",
+        "cctv12": "cctv12", "cctv12社会与法": "cctv12",
+        "cctv13": "cctv13", "cctv13新闻": "cctv13",
+        "cctv14": "cctv14", "cctv14少儿": "cctv14",
+        "cctv15": "cctv15", "cctv15音乐": "cctv15",
+        "cctv16": "cctv16", "cctv16奥林匹克": "cctv16",
+        "cctv17": "cctv17", "cctv17农业农村": "cctv17",
+    }
+    return alias_dict.get(name_fuzzy, name_fuzzy)
+
+def do_filter(xml_url, valid_channels, output_path):
+    """流式下载并高强容错过滤 EPG 源"""
+    new_root = ET.Element('tv')
+    new_root.set('generator-info-name', 'IPTV EPG Smart Filter')
+    
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://www.tvsou.com/'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     
-    epg_data = []
+    print(f"⏳ 正在拉取远端核心节目单: {xml_url}")
     try:
-        # 第一步：拿着频道名去网站的搜索接口，寻找该频道的专属页面 ID
-        search_url = f"https://www.tvsou.com/search/?q={channel_name}"
-        search_res = requests.get(search_url, headers=headers, timeout=12, verify=False)
-        search_res.encoding = 'utf-8'
+        response = requests.get(xml_url, headers=headers, timeout=45, stream=True, verify=False)
+        if response.status_code != 200:
+            print(f"❌ 下载主节目单失败，状态码: {response.status_code}")
+            return False
+            
+        tree = ET.parse(response.raw)
+        root = tree.getroot()
         
-        # 从搜索结果中提取真实的频道详情页链接（形如 /epg/cctv1/ 或 /epg/hunan_weishi/）
-        channel_path_match = re.search(r'href="(/epg/[a-zA-Z0-9_-]+/)"', search_res.text)
-        if not channel_path_match:
-            # 尝试第二种备用搜索匹配结构
-            channel_path_match = re.search(r'/epg/\w+-\w+/', search_res.text)
-            
-        if channel_path_match:
-            channel_path = channel_path_match.group(1)
-            target_url = f"https://www.tvsou.com{channel_path}"
-            
-            # 第二步：直接请求该频道的具体节目单网页
-            page_res = requests.get(target_url, headers=headers, timeout=12, verify=False)
-            page_res.encoding = 'utf-8'
-            
-            # 第三步：使用 BeautifulSoup 提取网页里的时间表和节目名
-            soup = BeautifulSoup(page_res.text, 'html.parser')
-            
-            # 适配该网站标准的节目列表标签结构
-            prog_items = soup.find_all('li', class_='g_li') or soup.find_all('tr', class_='prog_tr')
-            
-            if not prog_items:
-                # 兜底：用正则表达式直接从网页源代码里抽取时间（00:00-23:59）和对应的节目名
-                matches = re.findall(r'(\d{2}:\d{2}).*?title="([^"]+)"', page_res.text)
-                for time_str, title_str in matches:
-                    if len(title_str) < 50:  # 过滤掉过长的 HTML 干扰文本
-                        epg_data.append({'time': time_str, 'title': title_str})
-            else:
-                for item in prog_items:
-                    time_node = item.find(class_='time') or item.find('span')
-                    title_node = item.find(class_='title') or item.find('a')
-                    if time_node and title_node:
-                        time_str = time_node.text.strip()
-                        title_str = title_node.text.strip()
-                        if re.match(r'\d{2}:\d{2}', time_str):
-                            epg_data.append({'time': time_str, 'title': title_str})
-                            
-            if epg_data:
-                # 对抓取到的结果按时间排个序，确保拼装时不紊乱
-                epg_data = sorted(epg_data, key=lambda x: x['time'])
-                return channel_name, epg_data
-    except:
-        pass
-    return channel_name, None
-
-def build_xmltv_from_scratch(all_results, output_path):
-    """根据实时爬取上来的多线程结果，原地组装纯正的 XMLTV 格式"""
-    today_str = datetime.datetime.now().strftime("%Y%m%d")
-    
-    root = ET.Element('tv')
-    root.set('generator-info-name', 'IPTV Pure Web Scraper')
-    
-    channel_count = 0
-    prog_count = 0
-    
-    for ch_name, epg_list in all_results:
-        if not epg_list:
-            continue
-            
-        ch_id = ch_name.lower().replace(" ", "").replace("-", "")
+        keep_channel_ids = set()
         
-        # 1. 创建频道声明节点
-        channel_node = ET.SubElement(root, 'channel', id=ch_id)
-        display_name_node = ET.SubElement(channel_node, 'display-name')
-        display_name_node.text = ch_name
-        channel_count += 1
-        
-        # 2. 循环拼接各个时间段的节目预告详情
-        for idx, item in enumerate(epg_list):
-            time_short = item.get('time', '').replace(":", "")  # "0800"
-            title = item.get('title', '')
+        # 1. 过滤并保存合规的 channel 节点
+        for channel in root.findall('channel'):
+            channel_id = channel.get('id')
+            display_names = [n.text.strip() for n in channel.findall('display-name') if n.text]
             
-            if not time_short or not title:
-                continue
+            # 将大源的名字全部拉出来做别名清洗
+            match = False
+            check_list = [channel_id] + display_names
+            
+            for item in check_list:
+                if not item: continue
+                item_raw = str(item).strip()
+                item_fuzzy = item_raw.replace(" ", "").replace("-", "").replace("_", "").replace("频道", "").lower()
                 
-            start_xmltime = f"{today_str}{time_short}00 +0800"
-            
-            # 计算节目结束时间：默认为下一个节目的开始时间，最后一个播放到深夜
-            if idx < len(epg_list) - 1:
-                next_time_short = epg_list[idx+1].get('time', '').replace(":", "")
-                stop_xmltime = f"{today_str}{next_time_short}00 +0800"
-            else:
-                stop_xmltime = f"{today_str}235959 +0800"
+                # 双重判定：字面绝对匹配，或者智能别名对齐匹配
+                if (item_raw in valid_channels or 
+                    item_fuzzy in valid_channels or 
+                    get_smart_alias(item_raw) in valid_channels):
+                    match = True
+                    break
+                    
+            if match:
+                keep_channel_ids.add(channel_id)
+                new_root.append(channel)
                 
-            prog_node = ET.SubElement(root, 'programme', start=start_xmltime, stop=stop_xmltime, channel=ch_id)
-            title_node = ET.SubElement(prog_node, 'title')
-            title_node.text = title
-            prog_count += 1
-
-    print(f"\n🎉 互联网实时爬取完成！共抓取了 {channel_count} 个频道的 {prog_count} 条最新节目表。")
-    
-    try:
-        new_tree = ET.ElementTree(root)
+        print(f"✅ 成功从大源中强行对齐了 {len(keep_channel_ids)} 个您的直播频道。")
+        
+        # 2. 过滤并拉取 programme 节点
+        prog_count = 0
+        for programme in root.findall('programme'):
+            prog_channel = programme.get('channel')
+            if prog_channel in keep_channel_ids:
+                new_root.append(programme)
+                prog_count += 1
+                
+        print(f"🎬 成功灌入 {prog_count} 条精确到小时的节目单详情。")
+        
+        # 3. 强行输出文件
+        new_tree = ET.ElementTree(new_root)
         new_tree.write(output_path, encoding='utf-8', xml_declaration=True)
-        print(f"💾 你的纯自主订阅地址已就绪，成功写入: {output_path}")
+        print(f"💾 精简版节目单已安全落盘: {output_path}")
         return True
+        
     except Exception as e:
-        print(f"❌ 写入 XML 失败: {e}")
+        print(f"❌ 过滤处理期间发生异常: {e}")
         return False
 
 if __name__ == "__main__":
-    # 解析直播源
     my_channels = get_channels_from_m3u(M3U_URL)
-    print(f"📋 从你的直播源中成功提取出 {len(my_channels)} 个待抓取的独立频道。")
+    print(f"📋 直播源中已成功提取 {len(my_channels)} 个特征识别码。")
     
-    if not my_channels:
-        print("❌ 频道列表为空，停止运行。")
-        sys.exit(1)
-        
-    print("🚀 正在激活全网分布式多线程爬虫，开始实时向互联网检索节目单...")
-    final_results = []
-    
-    # 开启 25 路线程并发对目标网站发起高速检索
-    with ThreadPoolExecutor(max_workers=25) as executor:
-        futures = {executor.submit(fetch_epg_from_web, ch): ch for ch in my_channels}
-        for idx, future in enumerate(as_completed(futures), 1):
-            ch_name, web_data = future.result()
-            if web_data:
-                final_results.append((ch_name, web_data))
-            if idx % 50 == 0:
-                print(f"   进度报告：已完成全网检索 {idx}/{len(my_channels)} 个频道...")
-                
-    # 拼装生成文件
-    success = build_xmltv_from_scratch(final_results, OUTPUT_FILE)
-    
-    if not success:
+    if my_channels:
+        success = do_filter(BIG_XML_URL, my_channels, OUTPUT_FILE)
+        if not success:
+            sys.exit(1)
+    else:
+        print("❌ 未在你的 M3U 中捞出任何可用频道，停止运行。")
         sys.exit(1)
