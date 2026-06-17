@@ -1,0 +1,36 @@
+name: Update IPTV EPG Daily
+
+on:
+  schedule:
+    # 每天北京时间凌晨 04:00 自动运行 (UTC 时间 20:00)
+    - cron: '0 20 * * *'
+  workflow_dispatch: # 允许你在网页上点击按钮手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 检查仓库代码
+      uses: actions/checkout@v3
+
+    - name: 设置 Python 环境
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: 安装依赖库
+      run: |
+        pip install requests
+
+    - name: 执行过滤脚本
+      run: |
+        python epg_filter.py
+
+    - name: 提交新生成的 EPG 到仓库
+      run: |
+        git config --local user.email "actions@github.com"
+        git config --local user.name "GitHub Actions"
+        git add my_epg.xml
+        git commit -m "Update EPG [skip ci]" || exit 0
+        git push
