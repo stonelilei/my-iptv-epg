@@ -9,13 +9,17 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    
+    # 显式声明赋予此任务写权限，双重保险防止 128 错误
+    permissions:
+      contents: write
 
     steps:
     - name: 检查仓库代码
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4  # 升级到 v4，解决 Node 警告
 
     - name: 设置 Python 环境
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5 # 升级到 v5，解决 Node 警告
       with:
         python-version: '3.10'
 
@@ -28,9 +32,22 @@ jobs:
         python epg_filter.py
 
     - name: 提交新生成的 EPG 到仓库
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 注入临时令牌
       run: |
         git config --local user.email "actions@github.com"
         git config --local user.name "GitHub Actions"
-        git add my_epg.xml
-        git commit -m "Update EPG [skip ci]" || exit 0
-        git push
+        
+        # 检查是否有文件变化，防止没有变化时报错
+        if [ -f "my_epg.xml" ]; then
+          git add my_epg.xml
+          if git diff --staged --quiet; then
+            echo "没有发现内容变化，跳过提交。"
+          else
+            git commit -m "Update EPG [skip ci]"
+            git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main
+          fi
+        else
+          echo "错误：未找到生成的 my_epg.xml 文件！"
+          exit 1
+        fi
